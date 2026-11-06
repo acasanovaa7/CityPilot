@@ -1,28 +1,58 @@
 """Punto ÚNICO de integración para web y API JSON. Pendiente del alumnado."""
 from app import api_clients, db, llm
+import time
+import requests
 
 TIPOS_VALIDOS = {"cultural", "gastronomica", "naturaleza", "familiar"}
 DURACIONES_VALIDAS = {2, 4, 6}
 
 
 def procesar_solicitud(ciudad: str, tipo_turismo: str, duracion_horas: int, preferencias: str = "") -> dict:
-    """TODO(ALUMNADO): implementar todo el recorrido.
+    inicio = time.time()
 
-    1) Validación (ciudad no vacía, tipo permitido, duración 2/4/6).
-    2) Geocodificar la ciudad y consultar clima actual.
-    3) Consultar lugares reales; si falla Overpass, utilizar fixture
-       SOLAMENTE para demostrar flujo, marcando 'demo': True.
-    4) Preparar el contexto y llamar a llm.generar_itinerario.
-    5) Guardar entradas, respuestas, prompt, resultado, éxito/error,
-       duración y el modo de datos en PostgreSQL.
-    6) Devolver contrato consistente a ambas rutas Flask.
+    # 1) Validación
+    ciudad = (ciudad or "").strip()
+    preferencias = (preferencias or "").strip()
+    duracion_horas = int(duracion_horas)
+    if not ciudad or len(ciudad) > 80:
+        raise ValueError("La ciudad es obligatoria (máximo 80 caracteres)")
+    if tipo_turismo not in TIPOS_VALIDOS:
+        raise ValueError("Tipo de turismo no válido")
+    if duracion_horas not in DURACIONES_VALIDAS:
+        raise ValueError("La duración debe ser 2, 4 o 6 horas")
+    if len(preferencias) > 200:
+        raise ValueError("Las preferencias no pueden superar 200 caracteres")
 
-    Salida orientativa:
-      {'ciudad': ..., 'tipo_turismo': ..., 'meteorologia': {...},
-       'lugares': [...], 'itinerario': ..., 'modo_demo': False,
-       'solicitud_id': 1}
+   # 2) Coordenadas y clima
+    g = api_clients.geocodificar(ciudad)
+    meteo = api_clients.obtener_meteorologia(g["lat"], g["lon"])
 
-    IMPORTANTE: ni el modelo ni los mocks son la fuente de lugares.
-    Los datos de interés proceden de Overpass; el modelo los ORGANIZA.
-    """
-    raise NotImplementedError("Implementa el flujo de integración")
+    # 3) Lugares reales
+    lugares = api_clients.obtener_lugares(g["lat"], g["lon"], tipo_turismo)
+
+    # 4) Contexto y modelo
+    contexto = {
+        "ciudad": g["ciudad"], "tipo_turismo": tipo_turismo,
+        "duracion_horas": duracion_horas, "preferencias": preferencias,
+        "meteorologia": meteo, "lugares": lugares,
+    }
+    itinerario, prompt = llm.generar_itinerario(contexto)
+    # 5) Guardar en PostgreSQL
+    duracion_ms = int((time.time() - inicio) * 1000)
+    solicitud_id = db.guardar_solicitud({
+        "ciudad": g["ciudad"], "pais": g["pais"], "tipo_turismo": tipo_turismo,
+        "duracion_horas": duracion_horas, "preferencias": preferencias,
+        "latitud": g["lat"], "longitud": g["lon"],
+        "meteorologia": meteo, "lugares": lugares,
+        "prompt_usado": prompt, "itinerario": itinerario,
+        "estado": "ok", "duracion_ms": duracion_ms, "error_resumido": None,
+        "modo_demo": False, "modo_modelo": llm.LLM_MODE,
+    })
+
+    # 6) Mismo diccionario para HTML y JSON
+    return {
+        "solicitud_id": solicitud_id, "ciudad": g["ciudad"],
+        "tipo_turismo": tipo_turismo, "duracion_horas": duracion_horas,
+        "meteorologia": meteo, "lugares": lugares,
+        "itinerario": itinerario, "modo_demo": False,
+    }
