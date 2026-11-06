@@ -7,11 +7,7 @@ COHERE_MODEL = os.getenv("COHERE_MODEL", "command-r7b-12-2024")
 
 
 def generar_itinerario(contexto: dict) -> tuple[str, str]:
-    """Devuelve (texto_itinerario, prompt_usado).
-
-    `contexto` incluye: ciudad, tipo_turismo, duracion_horas,
-    preferencias, meteorologia y lista de lugares REALES de la fuente.
-    """
+    """Devuelve (texto_itinerario, prompt_usado)."""
     if LLM_MODE == "mock":
         return _simulador(contexto), "[SIMULADOR: sin llamada a modelo]"
 
@@ -22,17 +18,47 @@ def generar_itinerario(contexto: dict) -> tuple[str, str]:
     if not api_key:
         raise RuntimeError("Falta COHERE_API_KEY (pedirla al docente)")
 
-    # TODO(ALUMNADO): redactar VUESTRO PROPIO prompt en castellano.
-    # Debe pedir 3-5 paradas del listado verificable, justificar cambios
-    # por clima, respetar duración/preferencias, no inventar horarios ni
-    # ubicaciones y declarar si no hay suficientes datos.
-    # TODO(ALUMNADO): descubrir en la documentación Cohere Chat v2
-    # cómo autenticar la petición, construir el JSON de entrada,
-    # enviar un mensaje de usuario y extraer el texto devuelto.
-    # Documentad un primer intento y al menos una mejora del prompt.
-    # Comprobad errores 401/429, respuesta vacía y timeout.
-    # No guardar nunca claves ni cabeceras privadas.
-    raise NotImplementedError("Implementa llamada al modelo Cohere")
+    meteo = contexto["meteorologia"]
+    lugares = "\n".join(
+        f"- {l['nombre']} ({l['categoria']}, lat {l['lat']}, lon {l['lon']})"
+        for l in contexto["lugares"]
+    )
+
+    prompt = f"""Eres un guía turístico local de {contexto['ciudad']}.
+
+Datos del usuario:
+- Tipo de turismo: {contexto['tipo_turismo']}
+- Duración disponible: {contexto['duracion_horas']} horas
+- Preferencias: {contexto.get('preferencias') or 'ninguna'}
+
+Tiempo actual: {meteo.get('temperatura_c')} °C, precipitación {meteo.get('precipitacion_mm')} mm.
+
+Lugares verificados (OpenStreetMap):
+{lugares}
+
+Tarea: propón una ruta de 3 a 5 paradas en orden, con un tiempo aproximado en cada una, que encaje en {contexto['duracion_horas']} horas.
+
+Reglas:
+1. Usa SOLO lugares de la lista anterior. No inventes ningún lugar.
+2. No digas horarios de apertura, precios ni eventos: no están verificados.
+3. Si llueve (precipitación > 0), prioriza sitios cubiertos y explica por qué.
+4. Si hay menos de 3 lugares, dilo claramente en vez de completar la ruta.
+5. Responde en castellano, de forma breve."""
+
+    r = requests.post(
+        "https://api.cohere.com/v2/chat",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json={"model": COHERE_MODEL, "messages": [{"role": "user", "content": prompt}]},
+        timeout=30,
+    )
+    r.raise_for_status()
+
+    contenido = r.json().get("message", {}).get("content") or []
+    if not contenido or not contenido[0].get("text"):
+        raise RuntimeError("Cohere ha devuelto una respuesta vacía")
+
+    texto_itinerario = contenido[0]["text"]
+    return texto_itinerario, prompt
 
 
 def _simulador(contexto: dict) -> str:
